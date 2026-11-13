@@ -1,0 +1,14 @@
+import {PrismaClient} from '@prisma/client';
+import {createApp} from './api/app.js';
+const port=Number(process.env.PORT??3000);
+const host=process.env.HOST??(process.env.NODE_ENV==='production'?'0.0.0.0':'127.0.0.1');
+const secret=process.env.SESSION_SECRET??'local-simulation-secret-change-before-use-00000000';
+if(process.env.NODE_ENV==='production'&&(secret.startsWith('local-simulation')||secret.includes('replace-with')||secret.length<32))throw new Error('Set SESSION_SECRET before starting in production.');
+const db=new PrismaClient();
+await db.$connect();
+const app=createApp(db);
+const service=new (await import('./api/service.js')).KudosService(db);
+const cleanupTimer=setInterval(()=>void service.cleanup().catch(e=>console.error('cleanup_error',e instanceof Error?e.name:'UnknownError')),15*60*1000);cleanupTimer.unref();
+const server=app.listen(port,host,()=>console.log('Kudos API listening on http://127.0.0.1:'+port));
+const shutdown=async()=>{server.close();await db.$disconnect();process.exit(0)};
+process.on('SIGINT',()=>void shutdown());process.on('SIGTERM',()=>void shutdown());

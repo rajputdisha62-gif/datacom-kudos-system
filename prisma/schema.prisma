@@ -1,0 +1,132 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Employee {
+  id          String   @id @default(cuid())
+  ssoSubject  String   @unique @map("sso_subject")
+  displayName String   @map("display_name")
+  role        String   @default("EMPLOYEE")
+  createdAt   DateTime @default(now()) @map("created_at")
+  sent        Kudos[]  @relation("Sender")
+  received    Kudos[]  @relation("Recipient")
+  likes       KudosLike[]
+  reports     Report[] @relation("Reporter")
+  reviewed    Report[] @relation("Reviewer")
+  notifications Notification[]
+  moderationActions ModerationAudit[]
+  idempotencyRecords IdempotencyRecord[]
+  rateWindows CreationRateWindow[]
+  @@index([displayName])
+  @@map("employees")
+}
+
+model Kudos {
+  id          String   @id @default(cuid())
+  senderId    String   @map("sender_id")
+  recipientId String   @map("recipient_id")
+  message     String   @db.VarChar(500)
+  /// Authoritative visibility state; employee queries must restrict this to PUBLISHED.
+  status      String   @default("PUBLISHED")
+  createdAt   DateTime @default(now()) @map("created_at")
+  moderatedAt DateTime? @map("moderated_at")
+  sender      Employee @relation("Sender", fields: [senderId], references: [id])
+  recipient   Employee @relation("Recipient", fields: [recipientId], references: [id])
+  likes       KudosLike[]
+  reports     Report[]
+  notifications Notification[]
+  audits      ModerationAudit[]
+  idempotencyRecords IdempotencyRecord[]
+  @@index([status, createdAt(sort: Desc)])
+  @@index([senderId, status, createdAt(sort: Desc)])
+  @@index([recipientId, status, createdAt(sort: Desc)])
+  @@map("kudos")
+}
+
+model KudosLike {
+  kudosId    String   @map("kudos_id")
+  employeeId String   @map("employee_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  kudos      Kudos    @relation(fields: [kudosId], references: [id], onDelete: Cascade)
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@id([kudosId, employeeId])
+  @@map("kudos_likes")
+}
+
+model Report {
+  id         String   @id @default(cuid())
+  kudosId    String   @map("kudos_id")
+  reporterId String   @map("reporter_id")
+  reason     String   @db.VarChar(120)
+  detail     String?  @db.VarChar(1000)
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now()) @map("created_at")
+  reviewedBy String?  @map("reviewed_by")
+  reviewedAt DateTime? @map("reviewed_at")
+  kudos      Kudos    @relation(fields: [kudosId], references: [id])
+  reporter   Employee @relation("Reporter", fields: [reporterId], references: [id])
+  reviewer   Employee? @relation("Reviewer", fields: [reviewedBy], references: [id])
+  audits     ModerationAudit[]
+  @@index([status, createdAt])
+  @@index([reporterId, createdAt])
+  @@map("reports")
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  recipientId String   @map("recipient_id")
+  kudosId     String   @map("kudos_id")
+  type        String   @default("KUDOS_RECEIVED")
+  createdAt   DateTime @default(now()) @map("created_at")
+  readAt      DateTime? @map("read_at")
+  recipient   Employee @relation(fields: [recipientId], references: [id])
+  kudos       Kudos    @relation(fields: [kudosId], references: [id])
+  @@unique([recipientId, kudosId])
+  @@index([recipientId, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+model ModerationAudit {
+  id              String   @id @default(cuid())
+  administratorId String   @map("administrator_id")
+  kudosId         String   @map("kudos_id")
+  reportId        String?  @map("report_id")
+  action          String
+  reason          String?  @db.VarChar(500)
+  createdAt       DateTime @default(now()) @map("created_at")
+  administrator   Employee @relation(fields: [administratorId], references: [id])
+  kudos           Kudos    @relation(fields: [kudosId], references: [id])
+  report          Report?  @relation(fields: [reportId], references: [id])
+  @@index([kudosId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("moderation_audit")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(cuid())
+  employeeId     String   @map("employee_id")
+  key            String
+  fingerprint    String
+  kudosId        String   @map("kudos_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  expiresAt      DateTime @map("expires_at")
+  employee       Employee @relation(fields: [employeeId], references: [id])
+  kudos          Kudos    @relation(fields: [kudosId], references: [id])
+  @@unique([employeeId, key])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
+model CreationRateWindow {
+  employeeId String   @map("employee_id")
+  windowStart DateTime @map("window_start")
+  count      Int      @default(0)
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  @@id([employeeId, windowStart])
+  @@map("creation_rate_windows")
+}

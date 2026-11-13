@@ -1,0 +1,22 @@
+import {beforeEach,describe,expect,it,vi} from 'vitest';
+import request from 'supertest';
+import type {PrismaClient} from '@prisma/client';
+import {createApp} from '../src/api/app.js';
+const user={id:'emp-1',ssoSubject:'demo-ava',displayName:'Ava Patel',role:'EMPLOYEE'};
+const admin={id:'admin-1',ssoSubject:'demo-admin',displayName:'Morgan Admin',role:'ADMINISTRATOR'};
+let service:any;const app=()=>createApp({} as PrismaClient,{service,simulationAuth:true});
+const agentFor=async(subject='demo-ava')=>{const a=request.agent(app());await a.post('/api/dev/sign-in').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send({subject}).expect(200);return a};
+beforeEach(()=>{service={employeeBySubject:vi.fn(async(s:string)=>s==='demo-admin'?admin:user),directory:vi.fn(async()=>[]),feed:vi.fn(async()=>({items:[],nextCursor:null})),create:vi.fn(async()=>({kudos:{id:'k1'},replayed:false})),like:vi.fn(async()=>({ok:true})),unlike:vi.fn(async()=>({ok:true})),notifications:vi.fn(async()=>[]),markRead:vi.fn(async()=>({ok:true})),report:vi.fn(async()=>({id:'r1',status:'PENDING'})),reports:vi.fn(async()=>[]),updateReport:vi.fn(async()=>({id:'r1'})),adminKudos:vi.fn(async()=>[]),moderate:vi.fn(async()=>({id:'k1',status:'HIDDEN'})),audit:vi.fn(async()=>[])};});
+describe('Kudos API access controls',()=>{
+ it('rejects unauthenticated data access',async()=>{await request(app()).get('/api/me').expect(401)});
+ it('requires same-origin simulation sign-in',async()=>{await request(app()).post('/api/dev/sign-in').send({subject:'demo-ava'}).expect(403)});
+ it('sets HTTP-only session and returns server-resolved user',async()=>{const a=request.agent(app());const r=await a.post('/api/dev/sign-in').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send({subject:'demo-ava'}).expect(200);expect(r.body.user.name).toBe('Ava Patel');expect(r.headers['set-cookie'][0]).toContain('HttpOnly');await a.get('/api/me').expect(200,{id:'emp-1',name:'Ava Patel',role:'EMPLOYEE'})});
+ it('denies employees administrator routes',async()=>{const a=await agentFor();await a.get('/api/admin/reports').expect(403);await a.post('/api/admin/kudos/k1/hide').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send({}).expect(403)});
+ it('allows admins to review reports, hidden posts and audit history',async()=>{const a=await agentFor('demo-admin');await a.get('/api/admin/reports').expect(200);await a.get('/api/admin/kudos?status=HIDDEN').expect(200);await a.get('/api/admin/moderation-audit').expect(200)});
+ it('rejects malformed feed cursors',async()=>{const a=await agentFor();await a.get('/api/kudos?cursor=nope').expect(400);expect(service.feed).not.toHaveBeenCalled()});
+ it('validates message and idempotency before create',async()=>{const a=await agentFor();const send=(body:any)=>a.post('/api/kudos').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send(body);const key='6a88e1c9-9c69-48da-b8e2-458defd30f02';await send({recipientId:'emp-2',message:'  ',idempotencyKey:key}).expect(400);await send({recipientId:'emp-2',message:'x'.repeat(501),idempotencyKey:key}).expect(400);await send({recipientId:'emp-2',message:'hello'}).expect(400);expect(service.create).not.toHaveBeenCalled()});
+ it('uses authenticated identity and forwards valid create',async()=>{const a=await agentFor();const key='6a88e1c9-9c69-48da-b8e2-458defd30f02';await a.post('/api/kudos').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send({recipientId:'emp-2',message:' Thanks! ',idempotencyKey:key}).expect(201);expect(service.create).toHaveBeenCalledWith('emp-1','emp-2','Thanks!',key)});
+ it('records admin moderation through the protected service path',async()=>{const a=await agentFor('demo-admin');await a.post('/api/admin/kudos/k1/hide').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send({reason:'Policy violation'}).expect(200);expect(service.moderate).toHaveBeenCalledWith('k1','admin-1','HIDE','Policy violation')});
+ it('blocks cross-origin state changes',async()=>{const a=await agentFor();await a.post('/api/kudos/k1/reports').set('Host','127.0.0.1').set('Origin','https://attacker.invalid').send({reason:'Spam'}).expect(403);expect(service.report).not.toHaveBeenCalled()});
+ it('accepts reports with a reason and limits queue access',async()=>{const a=await agentFor();await a.post('/api/kudos/k1/reports').set('Host','127.0.0.1').set('Origin','http://127.0.0.1').send({reason:'Spam'}).expect(201);expect(service.report).toHaveBeenCalledWith('k1','emp-1','Spam',undefined);await a.get('/api/admin/reports').expect(403)});
+});
